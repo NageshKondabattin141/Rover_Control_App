@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'dart:typed_data';
+import 'package:flutter_bluetooth_serial_plus/flutter_bluetooth_serial_plus.dart';
 
 void main() {
   runApp(const RoverApp());
@@ -32,6 +34,8 @@ class _RoverRemoteState extends State<RoverRemote>
   String steeringDirection = "CENTER";
   String currentStatus = "IDLE";
   String? pressedButton;
+  BluetoothConnection? connection;
+  List<BluetoothDevice> roverDevices = [];
 
   bool isConnected = false;
   int speed = 0;
@@ -73,18 +77,102 @@ class _RoverRemoteState extends State<RoverRemote>
     super.dispose();
   }
 
-  void connectBluetooth() {
-    setState(() {
-      isConnected = !isConnected;
-    });
+  Future<void> connectBluetooth() async {
+    try {
+      List<BluetoothDiscoveryResult> discoveredDevices = [];
+      // Start discovery
+      FlutterBluetoothSerial.instance.startDiscovery().listen((r) {
+        // Avoid duplicates
+        if (!discoveredDevices.any(
+                (d) => d.device.address == r.device.address)) {
+          discoveredDevices.add(r);
+        }
+      });
 
-    print(isConnected
-        ? "Bluetooth Connected (Dummy)"
-        : "Bluetooth Disconnected");
+      // Wait few seconds for scanning
+      await Future.delayed(const Duration(seconds: 5));
+
+      if (discoveredDevices.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("No Devices Found")),
+        );
+        return;
+      }
+
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: const RoundedRectangleBorder(
+          borderRadius:
+          BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        builder: (context) {
+          return SizedBox(
+            height: 400,
+            child: ListView.builder(
+              itemCount: discoveredDevices.length,
+              itemBuilder: (context, index) {
+                final device = discoveredDevices[index].device;
+
+                return ListTile(
+                  leading: const Icon(Icons.bluetooth,
+                      color: Colors.cyanAccent),
+                  title: Text(
+                    device.name ?? "Unknown Device",
+                    style:
+                    const TextStyle(color: Colors.white),
+                  ),
+                  subtitle: Text(
+                    device.address,
+                    style:
+                    const TextStyle(color: Colors.grey),
+                  ),
+                  onTap: () async {
+                    Navigator.pop(context);
+
+                    try {
+                      connection =
+                      await BluetoothConnection.toAddress(
+                          device.address);
+
+                      setState(() {
+                        isConnected = true;
+                      });
+
+                      print("Connected to ${device.name}");
+
+                      connection!.input!
+                          .listen((Uint8List data) {
+                        print("Incoming: ${String.fromCharCodes(data)}");
+                      }).onDone(() {
+                        setState(() {
+                          isConnected = false;
+                        });
+                      });
+                    } catch (e) {
+                      print("Connection error: $e");
+                    }
+                  },
+                );
+              },
+            ),
+          );
+        },
+      );
+    } catch (e) {
+      print("Bluetooth Error: $e");
+    }
   }
-
   void sendCommand(String cmd) {
     print("COMMAND: $cmd");
+
+    if (connection != null &&
+        connection!.isConnected) {
+      connection!.output.add(
+        Uint8List.fromList("$cmd\n".codeUnits),
+      );
+      connection!.output.allSent;
+    }
 
     setState(() {
       currentStatus = cmd.toUpperCase();
