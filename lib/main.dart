@@ -37,6 +37,8 @@ class _RoverRemoteState extends State<RoverRemote>
   BluetoothConnection? connection;
   List<BluetoothDevice> roverDevices = [];
 
+  StreamSubscription<BluetoothDiscoveryResult>? discoverySubscription;
+
   bool isConnected = false;
   int speed = 0;
   int battery = 100;
@@ -73,24 +75,35 @@ class _RoverRemoteState extends State<RoverRemote>
   @override
   void dispose() {
     batteryTimer?.cancel();
+    discoverySubscription?.cancel();
+    connection?.dispose();
     _returnController.dispose();
     super.dispose();
   }
 
   Future<void> connectBluetooth() async {
     try {
-      List<BluetoothDiscoveryResult> discoveredDevices = [];
-      // Start discovery
-      FlutterBluetoothSerial.instance.startDiscovery().listen((r) {
-        // Avoid duplicates
-        if (!discoveredDevices.any(
-                (d) => d.device.address == r.device.address)) {
-          discoveredDevices.add(r);
-        }
-      });
+      // If already connected → disconnect
+      if (isConnected) {
+        await connection?.close();
+        setState(() {
+          isConnected = false;
+        });
+        return;
+      }
 
-      // Wait few seconds for scanning
+      List<BluetoothDiscoveryResult> discoveredDevices = [];
+
+      discoverySubscription =
+          FlutterBluetoothSerial.instance.startDiscovery().listen((r) {
+            if (!discoveredDevices
+                .any((d) => d.device.address == r.device.address)) {
+              discoveredDevices.add(r);
+            }
+          });
+
       await Future.delayed(const Duration(seconds: 5));
+      await discoverySubscription?.cancel();
 
       if (discoveredDevices.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -139,8 +152,6 @@ class _RoverRemoteState extends State<RoverRemote>
                         isConnected = true;
                       });
 
-                      print("Connected to ${device.name}");
-
                       connection!.input!
                           .listen((Uint8List data) {
                         print("Incoming: ${String.fromCharCodes(data)}");
@@ -164,10 +175,7 @@ class _RoverRemoteState extends State<RoverRemote>
     }
   }
   void sendCommand(String cmd) {
-    print("COMMAND: $cmd");
-
-    if (connection != null &&
-        connection!.isConnected) {
+    if (connection != null && connection!.isConnected) {
       connection!.output.add(
         Uint8List.fromList("$cmd\n".codeUnits),
       );
@@ -181,6 +189,8 @@ class _RoverRemoteState extends State<RoverRemote>
       if (cmd == "backward") speed = 25;
       if (cmd == "stop") speed = 0;
     });
+
+    print("COMMAND: $cmd");
   }
 
   // ================= STEERING =================
@@ -344,11 +354,13 @@ class _RoverRemoteState extends State<RoverRemote>
         setState(() {
           pressedButton = null;
         });
+        sendCommand("stop");   // 🔥 Safety stop
       },
       onTapCancel: () {
         setState(() {
           pressedButton = null;
         });
+        sendCommand("stop");   // 🔥 Safety stop
       },
       child: Container(
         width: big ? 95 : 75,
